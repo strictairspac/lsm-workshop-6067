@@ -8,7 +8,7 @@
 
 北岭边缘计算小组有 7 人，负责低内存遥测站点的存储方案验证。过去在电子表格记录写入序列、手工画 SSTable、用本地脚本核对合并结果，三个痛点是配置与操作序列混在一起、删除键的历史难复查、读写放大缺少一致口径。上游为站点模拟写入序列；本站替代输入归档、配置组合与可重现演练；下游是边缘存储评审人与值班交接。
 
-- 写入批次：有序 put/delete，支持重复键、墓碑、完整操作预览、输入校验。
+- 写入批次：有序 put/delete，支持重复键、墓碑、完整操作预览、输入校验；断网站点可按段补传，声明起始序号与总条数，乱序/重叠/重试均可续传入库，连续序号补齐封存后才可试验。
 - 层级配置：memtable 不同键容量、SSTable 合并触发数、层级上限、最终完整合并开关。
 - 合并队列：创建试验时持久化输入及配置快照，Redis 分发，独立 worker 执行并记录状态。
 - 读放大证据：显示合并前后层级、读写放大、真实存活键、Oracle 摘要、刷盘/合并轨迹、JSON 导出。
@@ -49,8 +49,18 @@ docker compose down -v --remove-orphans
 6. 09:25 打开读放大证据，确认早班输入最终6个存活键，sensor-02/03未复活。
 7. 09:30 下载 `lsm-trial-<id>.json`，包含操作/配置快照、层级、轨迹与校验和。
 8. 09:40 viewer复核，创建试验被403拒绝；10:00 admin检查操作审计。
+9. 断网回补：在“写入批次”页登记声明总条数的接收中批次，按段填写起始序号补传。片段可乱序到达、可重叠重试；同序号同内容不重复写入，内容冲突整段拒绝且已收分段保留。补齐连续序号后点击封存，再提交试验。
 
 Seed另含“旧值复活回归集”和“全部删除边界集”；配置另含“保留层级观测”和“宽缓冲-完整合并”。账户、批次、配置以自然键查缺插入，重复seed不改变已存在字段。
+
+## 分段补传与封存
+
+- `POST /datasets` 传 `entries` 为一次性完整登记，直接封存；只传 `total_count`（1–2000）则建立 `receiving` 批次等待补传。
+- `POST /datasets/{id}/segments`：`start_seq` 为本段第一条序号（从1起），`count` 必须等于 `operations` 条数。分段可乱序、可相互重叠；已收序号重复上传相同内容返回 `replayed=true` 且不新增收据，任一序号内容冲突则整段 409 拒绝，事务内已收分段不受影响。
+- `GET /datasets/{id}` 返回 `gaps`（缺失的连续序号区间）、`received_count`、`revision` 与分段收据摘要，供断点续传判断已确认进度。
+- `POST /datasets/{id}/seal`：仅当 1..total_count 连续补齐时，在同一事务内按原序号拼接 `entries` 并置为 `sealed`；重复封存幂等返回 `already_sealed=true`。封存后追加分段返回 409。
+- 行锁（数据集行与分段收据）串行化“最后一段”与“封存”的竞争：不会漏收已确认分段，也不会并发重复封存。试验只读取 `sealed` 批次的 `entries` 快照，按原序号演算覆盖与删键；既有完整批次与历史试验不受影响。
+- 服务启动执行幂等 v1→v2 迁移：补齐列并放宽表结构，旧批次按已封存回填。
 
 ## 核心算法与指标口径
 
@@ -77,7 +87,7 @@ Seed另含“旧值复活回归集”和“全部删除边界集”；配置另�
 | db | MySQL8.0，持久化3个业务实体、用户与审计 |
 | redis | Redis7，异步队列与持久卷 |
 
-`backend/src/`分为config/models/schemas/services/controllers/routes/middlewares/utils/constants；`backend/scripts/seed_demo.py`种子与初始化；`backend/migrations/README.md`为schema v1说明。3实体dataset/config/trial各自贯穿model/schema/service/route、前端api/store/page。试验结果保存在Trial JSON字段中，详情页为独立业务页面。
+`backend/src/`分为config/models/schemas/services/controllers/routes/middlewares/utils/constants；`backend/scripts/seed_demo.py`种子与初始化；`backend/migrations/README.md`为schema v2说明。dataset/config/trial贯穿model/schema/service/route、前端api/store/page；dataset另带dataset_segments分段收据模型与schema迁移。试验结果保存在Trial JSON字段中，详情页为独立业务页面。
 
 `frontend/src/`包含api/stores/types/components/common/hooks/pages/router/utils/constants，表格/状态/页头跨页共享，HTML转义与反馈工具复用。角色/任务状态/操作类型枚举在`backend/src/constants/enums.py`和`frontend/src/constants/enums.js`。模型默认任务状态使用后端枚举，前端状态组件使用前端枚举。
 
@@ -90,9 +100,9 @@ Docker恰好5服务，全部healthcheck；backend依赖db/redis healthy，worker
 ## 已知边界
 
 - 存储过程为内存教学模型，忽略磁盘块、压缩、Bloom过滤器、WAL持久化、并行compaction与真实故障恢复。MySQL负责保存网页业务输入和输出。
-- 前端创建独立批次/配置，不提供原记录编辑删除；新版本新建记录，试验总是固定输入快照。
+- 前端创建独立批次/配置，不提供原记录编辑删除；新版本新建记录，试验总是固定输入快照。分段补传只追加不修改，CSV/断点元数据由值班系统负责。
 - 最终全历史合并允许去掉墓碑；没有模拟跨副本历史/快照读，因此不能将该规则直接用于生产数据库。
-- 单worker与按钮刷新；不提供多worker分布式锁、SSE。
+- 单worker与按钮刷新；不提供多worker分布式锁、SSE。worker按`claimed_at`租约原子认领任务，异常退出后超时任务可被再次认领。
 - Web双字体来自Google Fonts，离线回退到serif/monospace。
 
 MIT License，见LICENSE。实际测试与截图位于批次的`test-artifacts/gb-4106/`，源码内不保存测试证据。

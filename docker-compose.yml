@@ -31,6 +31,8 @@ services:
       DATABASE_URL: mysql+pymysql://app:${MYSQL_PASSWORD:-local_lsm_demo_4106}@db/lsm_workshop?charset=utf8mb4
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: ${JWT_SECRET:-local-demo-lsm-workshop-change-before-production-20261117}
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-10}
+      DATABASE_POOL_TIMEOUT: ${DATABASE_POOL_TIMEOUT:-15}
       SEED_DEMO: ${SEED_DEMO:-true}
     ports: ["${BACKEND_PORT:-19245}:8000"]
     volumes: ["artifacts:/artifacts"]

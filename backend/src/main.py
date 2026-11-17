@@ -5,12 +5,16 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import text
 from .config.database import engine
+from .config.schema import ensure_schema
 from .routes import auth,dataset,config,trial,audit
 from .middlewares.audit import AuditMiddleware
 from .middlewares.request_id import RequestIdMiddleware
 from .services.trial import queue
 @asynccontextmanager
 async def lifespan(app):
+    try:
+        ensure_schema(engine)
+    except Exception:logging.exception('schema migration failed')
     if os.getenv('SEED_DEMO','true')=='true':
         try:
             from scripts.seed_demo import seed

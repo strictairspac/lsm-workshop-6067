@@ -13,3 +13,4 @@ class Trial(Base):
     input_snapshot:Mapped[dict]=mapped_column(JSON)
     result:Mapped[dict|None]=mapped_column(JSON,nullable=True)
     created_at:Mapped[datetime]=mapped_column(DateTime,server_default=func.now())
+    claimed_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True)
